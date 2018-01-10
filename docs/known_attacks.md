@@ -35,7 +35,7 @@ function withdrawBalance() public {
 }
 ```
 
-Note that if you had another function which called `withdrawBalance()`, it would be potentially subject to the same attack, so you must treat any function which calls an untrusted contract as itself untrusted. See below for further discussion of potential solutions.
+Note that if you had another function called `withdrawBalance()`, it would be potentially subject to the same attack, so you must treat any function which calls an untrusted contract as itself untrusted. See below for further discussion of potential solutions.
 
 ### Cross-function Race Conditions
 
