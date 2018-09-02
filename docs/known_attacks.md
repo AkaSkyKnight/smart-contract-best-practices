@@ -21,7 +21,7 @@ function withdrawBalance() public {
 
 Since the user's balance is not set to 0 until the very end of the function, the second (and later) invocations will still succeed, and will withdraw the balance over and over again. A very similar bug was one of the vulnerabilities in the DAO attack.
 
-In the example given, the best way to avoid the problem is to [use `send()` instead of `call.value()()`](https://github.com/ConsenSys/smart-contract-best-practices#send-vs-call-value). This will prevent any external code from being executed.
+In the example given, the best way to avoid the problem is to [use `send()` instead of `call.value()()`](./recommendations#send-vs-call-value). This will prevent any external code from being executed.
 
 However, if you can't remove the external call, the next simplest way to prevent this attack is to make sure you don't call an external function until you've done all the internal work you need to do:
 
@@ -112,7 +112,7 @@ function untrustedGetFirstWithdrawalBonus(address recipient) public {
 }
 ```
 
-In addition to the fix making reentry impossible, [untrusted functions have been marked.](https://github.com/ConsenSys/smart-contract-best-practices#mark-untrusted-contracts) This same pattern repeats at every level: since `untrustedGetFirstWithdrawalBonus()` calls `untrustedWithdraw()`, which calls an external contract, you must also treat `untrustedGetFirstWithdrawalBonus()` as insecure.
+In addition to the fix making reentry impossible, [untrusted functions have been marked](./recommendations#mark-untrusted-contracts). This same pattern repeats at every level: since `untrustedGetFirstWithdrawalBonus()` calls `untrustedWithdraw()`, which calls an external contract, you must also treat `untrustedGetFirstWithdrawalBonus()` as insecure.
 
 Another solution often suggested is a [mutex](https://en.wikipedia.org/wiki/Mutual_exclusion). This allows you to "lock" some state so it can only be changed by the owner of the lock. A simple example might look like this:
 
@@ -151,13 +151,13 @@ contract StateHolder {
     address private lockHolder;
 
     function getLock() {
-        require(lockHolder == 0);
+        require(lockHolder == address(0));
         lockHolder = msg.sender;
     }
 
     function releaseLock() {
         require(msg.sender == lockHolder);
-        lockHolder = 0;
+        lockHolder = address(0);
     }
 
     function set(uint newState) {
@@ -180,20 +180,9 @@ Above were examples of race conditions involving the attacker executing maliciou
 Since a transaction is in the mempool for a short while, one can know what actions will occur, before it is included in a block. This can be troublesome for things like decentralized markets, where a transaction to buy some tokens can be seen, and a market order implemented before the other transaction gets included. Protecting against this is difficult, as it would come down to the specific contract itself. For example, in markets, it would be better to implement batch auctions (this also protects against high frequency trading concerns). Another way to use a pre-commit scheme (“I’m going to submit the details later”).
 
 ## Timestamp Dependence
+Be aware that the timestamp of the block can be manipulated by the miner, and all direct and indirect uses of the timestamp should be considered.
 
-Be aware that the timestamp of the block can be manipulated by the miner, and all direct and indirect uses of the timestamp should be considered. *Block numbers* and *average block time* can be used to estimate time, but this is not future proof as block times may change (such as the changes expected during Casper).
-
-```sol
-uint someVariable = now + 1;
-
-if (now % 2 == 0) { // the now can be manipulated by the miner
-
-}
-
-if ((someVariable - 100) % 2 == 0) { // someVariable can be manipulated by the miner
-
-}
-```
+See the [Recommendations](./recommendations/#timestamp-dependence) section for design considerations related to Timestamp Dependence.
 
 ## Integer Overflow and Underflow
 
@@ -230,6 +219,46 @@ Be careful with the smaller data-types like uint8, uint16, uint24...etc: they ca
 
 Be aware there are around [20 cases for overflow and underflow](https://github.com/ethereum/solidity/issues/796#issuecomment-253578925).
 
+### Underflow in Depth: Storage Manipulation
+ [Doug Hoyte's submission](https://github.com/Arachnid/uscc/tree/master/submissions-2017/doughoyte) to the 2017 underhanded solidity contest received [an honorable mention](http://u.solidity.cc/). The entry is interesting, because it raises the concerns about how C-like underflow might affect Solidity storage. Here is a simplified version:
+
+```sol
+contract UnderflowManipulation {
+    address public owner;
+    uint256 public manipulateMe = 10;
+    function UnderflowManipulation() {
+        owner = msg.sender;
+    }
+    
+    uint[] public bonusCodes;
+    
+    function pushBonusCode(uint code) {
+        bonusCodes.push(code);
+    }
+    
+    function popBonusCode()  {
+        require(bonusCodes.length >=0);  // this is a tautology
+        bonusCodes.length--; // an underflow can be caused here
+    }
+    
+    function modifyBonusCode(uint index, uint update)  { 
+        require(index < bonusCodes.length);
+        bonusCodes[index] = update; // write to any index less than bonusCodes.length
+    }
+    
+}
+```
+ 
+In general, the variable `manipulateMe`'s location cannot be influenced without going through the `keccak256`, which is infeasible. However, since dynamic arrays are stored sequentially, if a malicious actor wanted to change `manipulateMe` all they would need to do is:
+ 
+ * Call `popBonusCode` to underflow (Note: Solidity [lacks a built-in pop method](https://github.com/ethereum/solidity/pull/3743))
+ * Compute the storage location of `manipulateMe`
+ * Modify and update `manipulateMe`'s value using `modifyBonusCode`
+
+ In practice, this array would be immediately pointed out as fishy, but buried under more complex smart contract architecture, it can arbitrarily allow malicious changes to constant variables.
+
+When considering use of a dynamic array, a container data scructure is a good practice. The Solidity CRUD [part 1](https://medium.com/@robhitchens/solidity-crud-part-1-824ffa69509a) and [part 2](https://medium.com/@robhitchens/solidity-crud-part-2-ed8d8b4f74ec) articles are good resources.
+
 <a name="dos-with-unexpected-revert"></a>
 
 ## DoS with (Unexpected) revert
@@ -253,7 +282,7 @@ contract Auction {
 }
 ```
 
-When it tries to refund the old leader, it reverts if the refund fails. This means that a malicious bidder can become the leader while making sure that any refunds to their address will *always* fail. In this way, they can prevent anyone else from calling the `bid()` function, and stay the leader forever. A recommendation is to set up a [pull payment system](https://github.com/ConsenSys/smart-contract-best-practices/#favor-pull-over-push-payments) instead, as described earlier.
+When it tries to refund the old leader, it reverts if the refund fails. This means that a malicious bidder can become the leader while making sure that any refunds to their address will *always* fail. In this way, they can prevent anyone else from calling the `bid()` function, and stay the leader forever. A recommendation is to set up a [pull payment system](./recommendations#favor-pull-over-push-for-external-calls) instead, as described earlier.
 
 Another example is when a contract may iterate through an array to pay users (e.g., supporters in a crowdfunding contract). It's common to want to make sure that each payment succeeds. If not, one should revert. The issue is that if one call fails, you are reverting the whole payout system, meaning the loop will never complete. No one gets paid because one address is forcing an error.
 
@@ -270,7 +299,7 @@ function refundAll() public {
 }
 ```
 
-Again, the recommended solution is to [favor pull over push payments](#favor-pull-over-push-payments).
+Again, the recommended solution is to [favor pull over push payments](./recommendations#favor-pull-over-push-for-external-calls).
 
 ## DoS with Block Gas Limit
 
@@ -278,7 +307,7 @@ You may have noticed another problem with the previous example: by paying out to
 
 This can lead to problems even in the absence of an intentional attack. However, it's especially bad if an attacker can manipulate the amount of gas needed. In the case of the previous example, the attacker could add a bunch of addresses, each of which needs to get a very small refund. The gas cost of refunding each of the attacker's addresses could, therefore, end up being more than the gas limit, blocking the refund transaction from happening at all.
 
-This is another reason to [favor pull over push payments](#favor-pull-over-push-payments).
+This is another reason to [favor pull over push payments](./recommendations#favor-pull-over-push-for-external-calls).
 
 If you absolutely must loop over an array of unknown size, then you should plan for it to potentially take multiple blocks, and therefore require multiple transactions. You will need to keep track of how far you've gone, and be able to resume from that point, as in the following example:
 

@@ -34,20 +34,21 @@ function makeUntrustedWithdrawal(uint amount) {
 ```
 
 
-### Don't make control flow assumptions after external calls
+### Avoid state changes after external calls
 
 Whether using *raw calls* (of the form `someAddress.call()`) or *contract calls* (of the form `ExternalContract.someMethod()`), assume that malicious code might execute. Even if `ExternalContract` is not malicious, malicious code can be executed by any contracts *it* calls. 
 
-One particular danger is malicious code may hijack the control flow, leading to race conditions. (See [Race Conditions](https://github.com/ConsenSys/smart-contract-best-practices/#race-conditions) for a fuller discussion of this problem).
+One particular danger is malicious code may hijack the control flow, leading to race conditions. (See [Race Conditions](./known_attacks#race-conditions) for a fuller discussion of this problem).
 
-If you are making a call to an untrusted external contract, *avoid state changes after the call*.
+If you are making a call to an untrusted external contract, *avoid state changes after the call*. This pattern is also sometimes known as the [checks-effects-interactions pattern](http://solidity.readthedocs.io/en/develop/security-considerations.html?highlight=check%20effects#use-the-checks-effects-interactions-pattern).
+
 
 ### Be aware of the tradeoffs between `send()`, `transfer()`, and `call.value()()`
 
 When sending ether be aware of the relative tradeoffs between the use of
 `someAddress.send()`, `someAddress.transfer()`, and `someAddress.call.value()()`.
 
-- `someAddress.send()`and `someAddress.transfer()` are considered *safe* against [reentrancy](#reentrancy).
+- `someAddress.send()`and `someAddress.transfer()` are considered *safe* against [reentrancy](./known_attacks#reentrancy).
     While these methods still trigger code execution, the called contract is
     only given a stipend of 2,300 gas which is currently only enough to log an
     event.
@@ -58,7 +59,7 @@ When sending ether be aware of the relative tradeoffs between the use of
 Using `send()` or `transfer()` will prevent reentrancy but it does so at the cost of being incompatible with any contract whose fallback function requires more than 2,300 gas. It is also possible to use `someAddress.call.value(ethAmount).gas(gasAmount)()` to forward a custom amount of gas.
 
 One pattern that attempts to balance this trade-off is to implement both
-a [*push* and *pull*](#favor-pull-over-push-payments) mechanism, using `send()` or `transfer()`
+a [*push* and *pull*](#favor-pull-over-push-for-external-calls) mechanism, using `send()` or `transfer()`
 for the *push* component and `call.value()()` for the *pull* component.
 
 It is worth pointing out that exclusive use of `send()` or `transfer()` for value transfers
@@ -89,7 +90,7 @@ ExternalContract(someAddress).deposit.value(100);
 
 ### Favor *pull* over *push* for external calls
 
-External calls can fail accidentally or deliberately. To minimize the damage caused by such failures, it is often better to isolate each external call into its own transaction that can be initiated by the recipient of the call. This is especially relevant for payments, where it is better to let users withdraw funds rather than push funds to them automatically. (This also reduces the chance of [problems with the gas limit](https://github.com/ConsenSys/smart-contract-best-practices/#dos-with-block-gas-limit).)  Avoid combining multiple `send()` calls in a single transaction.
+External calls can fail accidentally or deliberately. To minimize the damage caused by such failures, it is often better to isolate each external call into its own transaction that can be initiated by the recipient of the call. This is especially relevant for payments, where it is better to let users withdraw funds rather than push funds to them automatically. (This also reduces the chance of [problems with the gas limit](./known_attacks#dos-with-block-gas-limit).)  Avoid combining multiple `send()` calls in a single transaction.
 
 ```sol
 // bad
@@ -100,7 +101,7 @@ contract auction {
     function bid() payable {
         require(msg.value >= highestBid);
 
-        if (highestBidder != 0) {
+        if (highestBidder != address(0)) {
             highestBidder.transfer(highestBid); // if this call consistently fails, no one else can bid
         }
 
@@ -118,7 +119,7 @@ contract auction {
     function bid() payable external {
         require(msg.value >= highestBid);
 
-        if (highestBidder != 0) {
+        if (highestBidder != address(0)) {
             refunds[highestBidder] += highestBid; // record the refund that this user can claim
         }
 
@@ -178,7 +179,7 @@ contract Token {
 }
 ```
 
-Note that the assertion is *not* a strict equality of the balance because the contract can be [forcibly sent ether](#ether-forcibly-sent) without going through the `deposit()` function!
+Note that the assertion is *not* a strict equality of the balance because the contract can be [forcibly sent ether](#remember-that-ether-can-be-forcibly-sent-to-an-account) without going through the `deposit()` function!
 
 
 ## Use `assert()` and `require()` properly
@@ -236,7 +237,19 @@ function() payable { balances[msg.sender] += msg.value; }
 // good
 function deposit() payable external { balances[msg.sender] += msg.value; }
 
+function() payable { require(msg.data.length == 0); LogDepositReceived(msg.sender); }
+```
+
+## Check data length in fallback functions
+
+Since the [fallback functions](http://solidity.readthedocs.io/en/latest/contracts.html#fallback-function) is not only called for plain ether transfers (without data) but also when no other function matches, you should check that the data is empty if the fallback function is intended to be used only for the purpose of logging received Ether. Otherwise, callers will not notice if your contract is used incorrectly and functions that do not exist are called.
+
+```sol
+// bad
 function() payable { LogDepositReceived(msg.sender); }
+
+// good
+function() payable { require(msg.data.length == 0); LogDepositReceived(msg.sender); }
 ```
 
 ## Explicitly mark visibility in functions and state variables
@@ -277,6 +290,10 @@ pragma solidity ^0.4.4;
 // good
 pragma solidity 0.4.4;
 ```
+
+### Exception
+
+Pragma statements can be allowed to float when a contract is intended for consumption by other developers, as in the case with contracts in a library or EthPM package. Otherwise, the developer would need to manually update the pragma in order to compile locally. 
 
 ## Differentiate functions and events
 
@@ -360,6 +377,97 @@ You can read more about it here: [Solidity docs](https://solidity.readthedocs.io
 Besides the issue with authorization, there is a chance that `tx.origin` will be removed from the Ethereum protocol in the future, so code that uses `tx.origin` won't be compatible with future releases [Vitalik: 'Do NOT assume that tx.origin will continue to be usable or meaningful.'](https://ethereum.stackexchange.com/questions/196/how-do-i-make-my-dapp-serenity-proof/200#200)
 
 It's also worth mentioning that by using `tx.origin` you're limiting interoperability between contracts because the contract that uses tx.origin cannot be used by another contract as a contract can't be the `tx.origin`.
+
+## Timestamp Dependence
+
+There are three main considerations when using a timestamp to execute a critical function in a contract, especially when actions involve fund transfer.
+
+### Gameability
+
+Be aware that the timestamp of the block can be manipulated by a miner. Consider this [contract](https://etherscan.io/address/0xcac337492149bdb66b088bf5914bedfbf78ccc18#code):
+
+```sol
+    
+uint256 constant private salt =  block.timestamp;
+    
+function random(uint Max) constant private returns (uint256 result){
+    //get the best seed for randomness
+    uint256 x = salt * 100/Max;
+    uint256 y = salt * block.number/(salt % 5) ;
+    uint256 seed = block.number/3 + (salt % 300) + Last_Payout + y; 
+    uint256 h = uint256(block.blockhash(seed)); 
+    
+    return uint256((h / x)) % Max + 1; //random number between 1 and Max
+}
+```
+
+When the contract uses the timestamp to seed a random number, the miner can actually post a timestamp within 30 seconds of the block being validating, effectively allowing the miner to precompute an option more favorable to their chances in the lottery. Timestamps are not random and should not be used in that context.
+
+### *30-second Rule*
+A general rule of thumb in evaluating timestamp usage is:
+#### If the contract function can tolerate a [30-second](https://ethereum.stackexchange.com/questions/5924/how-do-ethereum-mining-nodes-maintain-a-time-consistent-with-the-network/5931#5931) drift in time, it is safe to use `block.timestamp`
+If the scale of your time-dependent event can vary by 30-seconds and maintain integrity, it is safe to use a timestamp. This includes things like ending of auctions, registration periods, etc. 
+
+### Caution using `block.number` as a timestamp
+
+When a contract creates an `auction_complete` modifier to signify the end of a token sale such as [so]((https://github.com/SpankChain/old-sc_auction/blob/master/contracts/Auction.sol))
+```sol
+modifier auction_complete {
+    require(auctionEndBlock <= block.number     ||
+          currentAuctionState == AuctionState.success || 
+          currentAuctionState == AuctionState.cancel)
+        _;}
+```
+`block.number` and *[average block time](https://etherscan.io/chart/blocktime)* can be used to estimate time as well, but this is not future proof as block times may change (such as [fork reorganisations](https://blog.ethereum.org/2015/08/08/chain-reorganisation-depth-expectations/) and the [difficulty bomb](https://github.com/ethereum/EIPs/issues/649)). In a sale spanning days, the 12-minute rule allows one to construct a more reliable estimate of time. 
+
+## Multiple Inheritance Caution
+
+When utilizing multiple inheritance in Solidity, it is important to understand how the compiler composes the inheritance graph.
+
+```sol
+
+contract Final {
+    uint public a;
+    function Final(uint f) public {
+        a = f;
+    }
+}
+
+contract B is Final {
+    int public fee;
+    
+    function B(uint f) Final(f) public {
+    }
+    function setFee() public {
+        fee = 3;
+    }
+}
+
+contract C is Final {
+    int public fee;
+    
+    function C(uint f) Final(f) public {
+    }
+    function setFee() public {
+        fee = 5;
+    }
+}
+
+contract A is B, C {
+  function A() public B(3) C(5) {
+      setFee();
+  }
+}
+```
+When A is deployed, the compiler will *linearize* the inheritance from left to right, as:
+
+**C -> B -> A**
+
+The consequence of the linearization will yield a `fee` value of 5, since C is the most derived contract. This may seem obvious, but imagine scenarios where C is able to shadow crucial functions, reorder boolean clauses, and cause the developer to write exploitable contracts. Static analysis currently does not raise issue with overshadowed functions, so it must be manually inspected.
+
+For more on security and inheritance, check out this [article](https://pdaian.com/blog/solidity-anti-patterns-fun-with-inheritance-dag-abuse/)
+
+To help contribute, Solidity's Github has a [project](https://github.com/ethereum/solidity/projects/9#card-8027020) with all inheritance-related issues.
 
 ## Deprecated/historical recommendations
 
